@@ -1,0 +1,110 @@
+#!/bin/bash
+
+set -e
+
+echo "=== Installing dependencies ==="
+sudo yum update -y
+sudo yum install -y wget tar systemd unzip shadow-utils
+
+### PROMETHEUS ###
+
+echo "=== Installing Prometheus v2.52.0 ==="
+wget https://github.com/prometheus/prometheus/releases/download/v2.52.0/prometheus-2.52.0.linux-amd64.tar.gz
+tar -xf prometheus-2.52.0.linux-amd64.tar.gz
+sudo mv prometheus-2.52.0.linux-amd64/prometheus prometheus-2.52.0.linux-amd64/promtool /usr/local/bin/
+
+sudo mkdir -p /etc/prometheus /var/lib/prometheus
+sudo mv prometheus-2.52.0.linux-amd64/consoles prometheus-2.52.0.linux-amd64/console_libraries /etc/prometheus/
+rm -rf prometheus-2.52.0.linux-amd64*
+
+sudo useradd -rs /bin/false prometheus || true
+sudo chown -R prometheus: /etc/prometheus /var/lib/prometheus
+
+cat <<EOF | sudo tee /etc/prometheus/prometheus.yml
+global:
+  scrape_interval: 10s
+
+scrape_configs:
+  - job_name: 'prometheus_metrics'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'node_exporter_metrics'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['localhost:9100', 'worker-1:9100', 'worker-2:9100']
+EOF
+
+cat <<EOF | sudo tee /etc/systemd/system/prometheus.service
+[Unit]
+Description=Prometheus Monitoring
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=prometheus
+Group=prometheus
+Type=simple
+ExecStart=/usr/local/bin/prometheus \\
+  --config.file=/etc/prometheus/prometheus.yml \\
+  --storage.tsdb.path=/var/lib/prometheus \\
+  --web.console.templates=/etc/prometheus/consoles \\
+  --web.console.libraries=/etc/prometheus/console_libraries
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now prometheus
+sudo systemctl status prometheus --no-pager
+
+
+### GRAFANA OSS ###
+
+echo "=== Installing Grafana OSS v11.0.0 ==="
+sudo cat <<EOF | sudo tee /etc/yum.repos.d/grafana.repo
+[grafana]
+name=Grafana OSS
+baseurl=https://packages.grafana.com/oss/rpm
+repo_gpgcheck=1
+enabled=1
+gpgcheck=1
+gpgkey=https://packages.grafana.com/gpg.key
+EOF
+
+sudo yum install -y grafana
+sudo systemctl daemon-reexec
+sudo systemctl enable --now grafana-server
+sudo systemctl status grafana-server --no-pager
+
+
+### NODE EXPORTER ###
+
+echo "=== Installing Node Exporter v1.8.1 ==="
+wget https://github.com/prometheus/node_exporter/releases/download/v1.8.1/node_exporter-1.8.1.linux-amd64.tar.gz
+tar -xf node_exporter-1.8.1.linux-amd64.tar.gz
+sudo mv node_exporter-1.8.1.linux-amd64/node_exporter /usr/local/bin/
+rm -rf node_exporter-1.8.1.linux-amd64*
+
+sudo useradd -rs /bin/false node_exporter || true
+
+cat <<EOF | sudo tee /etc/systemd/system/node_exporter.service
+[Unit]
+Description=Node Exporter
+After=network.target
+
+[Service]
+User=node_exporter
+Group=node_exporter
+Type=simple
+ExecStart=/usr/local/bin/node_exporter
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now node_exporter
+sudo systemctl status node_exporter --no-pager
